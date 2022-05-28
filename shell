@@ -1,0 +1,141 @@
+#!/bin/node
+const readline = require('readline');
+const { spawn } = require('child_process');
+
+const isRoot = process.getuid() === 0;
+const { stdin: input, stdout: output } = process;
+const rl = readline.createInterface({
+  input,
+  output,
+  terminal: true, // Input and output streams should be treated like a TTY, and have ANSI/VT100 escape codes written to it.
+  prompt: isRoot ? '# ' : '$ '
+});
+let job = {}, stoppedJobs = [];
+
+// Send the specified signal to the child process.
+// Default: 'SIGTERM'.
+function sendSignal (sig) {
+  if (job.exitCode === null) {
+    if (sig) job.kill(sig);
+    else job.kill();
+  } else rl.prompt();
+}
+
+// Run a program as a new process.
+// Spawns a new child process and establish an IPC channel with it.
+// Unfortunately, NodeJS does not fully support IPC chanels with child processes that are not an instance of NodeJS.
+function run (cmd) {
+  // This shell only supports one job per instance.
+  // If that job requires user input (such as the `top` command), any subsiquent input to stdin is intended for the child process.
+  // Keep in mind that the resulting message might not be the same as what is originally sent.
+	// https://nodejs.org/api/child_process.html#subprocesssendmessage-sendhandle-options-callback
+  if (job.exitCode === null) return job.send(cmd);
+
+	const argv = cmd.split(' ');
+	const command = argv.splice(0, 1)[0];
+  // Using an IPC channel with a child process that is not a Node.js instance is not supported
+	// https://nodejs.org/api/child_process.html#optionsstdio
+  // We will do it anyway so I can make this shell.
+	job = spawn(command, argv, {stdio:['ipc', 'pipe', 'pipe']}); // Spawns the child process asynchronously, without blocking the Node.js event loop.
+
+	job.stdout.on('data', buffer => console.log(buffer.toString()));
+	
+	job.stderr.on('data', eBuffer => console.error(eBuffer.toString()));
+	
+	job.on('close', (code) => rl.prompt());
+	
+	job.on('error', () => { // Check if the spawn command failed.
+		console.log(`Error: ${command} not found.`)
+		rl.prompt();
+	});
+}
+
+// Check if the command entered is a shell command, if not then spawn a child process to run it.
+function lookup (line) {
+	line = line.trim()
+  const cmd = line.split(' ');
+
+  switch (cmd[0]) {
+    case 'exit':
+      rl.close();
+      break;
+    case 'cd':
+      process.chdir(cmd[1]);
+      rl.prompt();
+      break;
+    case 'pwd':
+      console.log(process.cwd());
+      rl.prompt();
+      break;
+    case 'echo':
+      cmd.splice(0, 1);
+
+      let str;
+      if (cmd[0] === '-n') {
+        cmd.splice(0, 1);
+
+        str = cmd.join(' ').split('\\n');
+        const last = str.length - 1;
+        str = str.reduce((prev, cur, i) => i < last ? prev + cur + '\n' : prev + cur, '');
+      } else str = cmd.join(' ');
+
+      console.log(s);
+      rl.prompt();
+      break;
+    case 'help':
+      console.log(
+`*** JavaScript Shell internal commands ***
+
+cd [directory]      - change working directory to the specified location
+echo [-n] [arg...]  - print to STDOUT (-n to interpret newline characters)
+exit                - exit the shell
+fg                  - bring a backgrounded process into the foreground
+help                - display this message
+jobs                - list all stopped jobs
+pwd                 - print current working directory`
+      );
+      rl.prompt();
+      break;
+    case 'fg':
+      sendSignal('SIGCONT');
+      break;
+    case 'jobs':
+      console.log(stoppedJobs.join('\n'));
+			rl.prompt();
+      break;
+		case '': // User pressed enter key.
+			rl.prompt();
+			break;
+    default:
+      run(line);
+  }
+}
+
+// Start the shell and begin Reading user input.
+function main () { 
+  rl.prompt();
+  rl.on('line', lookup); // The 'line' event is emitted whenever the input stream receives an end-of-line input. 
+
+  // Set up signal handlers.
+  rl.on('SIGINT', () => {
+    console.log('^C');
+    sendSignal();
+    rl.prompt();
+  });
+
+  rl.on('SIGTSTP', () => {
+    if (!job.killed && job.exitCode === null) {
+      const jobStr = `Stopped: ${job.spawnargs.join(' ')}`;
+      console.log('^Z\n', jobStr);
+
+      stoppedJobs.push(jobStr);
+      sendSignal('SIGTSTP');
+			rl.prompt();
+    } else {
+      console.log('^Z');
+      rl.prompt();
+    }
+  });
+}
+
+main();
