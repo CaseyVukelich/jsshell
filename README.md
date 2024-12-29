@@ -1,5 +1,6 @@
 # JavaScript Shell
 A shell written in NodeJS
+--- Abandoned project ---
 
 # Run
 ```script
